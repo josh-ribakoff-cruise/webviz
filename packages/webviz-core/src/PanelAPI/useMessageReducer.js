@@ -119,6 +119,13 @@ export function useMessageReducer<T>(props: Props<T>): T {
   useEffect(() => setSubscriptions(id, subscriptions), [id, setSubscriptions, subscriptions]);
   useCleanup(() => setSubscriptions(id, []));
 
+  const requestBackfill = useMessagePipeline(
+    useCallback(({ requestBackfill: pipelineRequestBackfill }) => pipelineRequestBackfill, [])
+  );
+  // Whenever `subscriptions`, `addMessage`, or `restore` change, request a backfill, since we'd
+  // like to show fresh data.
+  useEffect(() => requestBackfill(), [requestBackfill, props.restore, props.addMessage, subscriptions]);
+
   // Keep a reference to the last messages we processed to ensure we never process them more than once.
   // If the topics we care about change, the player should send us new messages soon anyway (via backfill if paused).
   const lastProcessedMessagesRef = useRef<?(Message[])>();

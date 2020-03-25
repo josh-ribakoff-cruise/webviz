@@ -6,7 +6,6 @@
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
 
-/* eslint-disable jest/no-disabled-tests */
 import { pick } from "lodash";
 
 import { getFilteredKeys } from "./TopicGroups";
@@ -119,9 +118,9 @@ const DEFAULT_TOPIC_CONFIG = {
     {
       name: "Nested Group",
       children: [
-        { name: "Topic A", topic: "/topic_a" },
+        { displayName: "Nested group a", name: "Topic A", topic: "/topic_a" },
         { name: "Topic B", topic: "/topic_b" },
-        { name: "Deeply Nested Group", children: [{ topic: "/topic_c" }] },
+        { name: "Deeply Nested Group", children: [{ displayName: "Deeply nested topic c", topic: "/topic_c" }] },
         { topic: "/topic_d" },
       ],
     },
@@ -196,12 +195,12 @@ describe("topicGroupUtils", () => {
 
   describe("buildItemDisplayNameByTopicOrExtension", () => {
     it("maps extension and topic to displayName", () => {
-      expect(buildItemDisplayNameByTopicOrExtension(DEFAULT_TOPIC_CONFIG)).toEqual({
+      expect(buildItemDisplayNameByTopicOrExtension(DEFAULT_TOPIC_CONFIG, true)).toEqual({
         "/metadata": "Map",
         "/tf": "TF",
-        "/topic_a": "Nested Group / Topic A",
+        "/topic_a": "Nested group a",
         "/topic_b": "Nested Group / Topic B",
-        "/topic_c": "Nested Group / Deeply Nested Group",
+        "/topic_c": "Deeply nested topic c",
         "/topic_d": "Nested Group",
         "/topic_in_json_tree": "Some Topic in JSON Tree",
         "ExtA.a": "Ext A",
@@ -307,7 +306,7 @@ describe("topicGroupUtils", () => {
         })
       ).toMatchSnapshot();
     });
-    it("returns filtered results based on topic group displayName, topicName and topic displayNames", () => {
+    it("returns filtered results based on topic group displayName, topicName, topic displayNames and namespace", () => {
       const topicGroupConfig = [
         {
           // filtered because this group has topicName or topic displayName that match with the filter text
@@ -323,6 +322,8 @@ describe("topicGroupUtils", () => {
         { displayName: "Some Group1", items: [{ topicName: "/some_topic2" }] },
         // filtered out because neither group nor topic matches
         { displayName: "Some Group2", items: [{ topicName: "/some_topic2" }] },
+        // filtered because namespace matches
+        { displayName: "Some Group3", items: [{ topicName: "/some_topic3" }] },
       ];
 
       const displayNameByTopic = {
@@ -330,7 +331,10 @@ describe("topicGroupUtils", () => {
       };
 
       const filterText = "1";
-      const filteredKeysSet = new Set(getFilteredKeys(topicGroupConfig, displayNameByTopic, filterText));
+      const namespacesByTopic = { "/some_topic3": ["ns1"] };
+      const filteredKeysSet = new Set(
+        getFilteredKeys(topicGroupConfig, displayNameByTopic, filterText, namespacesByTopic)
+      );
 
       // helper function to extract the relevant fields to simplify expect result
       function getMappedData(topicGroups: TopicGroupType[]) {
@@ -349,7 +353,7 @@ describe("topicGroupUtils", () => {
           { name: "/some_topic1", datatype: "visualization_msgs/MarkerArray" },
           { name: "/webviz_bag_2/some_topic2", datatype: "visualization_msgs/MarkerArray" },
         ],
-        namespacesByTopic: {},
+        namespacesByTopic,
         displayNameByTopic,
         errorsByTopic: {},
         filterText,
@@ -381,6 +385,11 @@ describe("topicGroupUtils", () => {
           displayName: "Some Group2",
           items: [{ derivedFields: { filterText: "1", isShownInList: false }, topicName: "/some_topic2" }],
         },
+        {
+          derivedFields: { filterText: "1", isShownInList: true },
+          displayName: "Some Group3",
+          items: [{ derivedFields: { filterText: "1", isShownInList: true }, topicName: "/some_topic3" }],
+        },
       ]);
     });
     it("filters out groups if none of the underlying topics matches", () => {
@@ -389,7 +398,8 @@ describe("topicGroupUtils", () => {
         { displayName: "Some Group2", items: [{ topicName: "/some_topic1" }, { topicName: "/some_topic2" }] },
       ];
       const filterText = "2";
-      const filteredKeysSet = new Set(getFilteredKeys(topicGroupConfig, {}, filterText));
+      const namespacesByTopic = {};
+      const filteredKeysSet = new Set(getFilteredKeys(topicGroupConfig, {}, filterText, namespacesByTopic));
 
       expect(
         getTopicGroups(topicGroupConfig, {
@@ -397,7 +407,7 @@ describe("topicGroupUtils", () => {
             { name: "/some_topic1", datatype: "visualization_msgs/MarkerArray" },
             { name: "/webviz_bag_2/some_topic2", datatype: "visualization_msgs/MarkerArray" },
           ],
-          namespacesByTopic: {},
+          namespacesByTopic,
           displayNameByTopic: {},
           errorsByTopic: {},
           filterText,
@@ -652,7 +662,7 @@ describe("updateFocusIndexesAndGetFocusData", () => {
                 { available: true, badgeText: "B1", isParentVisible: true, visible: true },
                 { available: true, badgeText: "B2", isParentVisible: true, visible: true },
               ],
-              namespaceDisplayVisibilityByNamespace: {},
+              sortedNamespaceDisplayVisibilityByColumn: [],
               id: "Some-Group_0_0",
               isShownInList: true,
               keyboardFocusIndex: -1,
@@ -705,7 +715,7 @@ describe("addIsKeyboardFocusedToTopicGroups", () => {
             id: "Some-Group_0_0",
             isShownInList: true,
             keyboardFocusIndex: 1,
-            namespaceDisplayVisibilityByNamespace: {},
+            sortedNamespaceDisplayVisibilityByColumn: [],
           },
           topicName: "/some_topic1",
         },
@@ -841,29 +851,5 @@ describe("default config", () => {
       expect(removeBlankSpaces("/ab f")).toEqual("/abf");
       expect(removeBlankSpaces("    /ab f")).toEqual("/abf");
     });
-  });
-
-  // TODO(Audrey): remove skip
-  describe.skip("getNamespacesItemsBySource", () => {
-    it("generates namespaces items with displayVisibilityByColumn (hidden + available + badgeText)", () => {});
-  });
-  describe.skip("getOnTopicGroupsChangeDataByKeyboardOp", () => {
-    it("expands a group", () => {});
-    it("expands a topic", () => {});
-    it("collapses a group", () => {});
-    it("does not collapse a group when filter text is not empty", () => {});
-    it("collapses a topic", () => {});
-    it("delete a group", () => {});
-    it("delete a topic", () => {});
-    it("handles new groups", () => {});
-    it("handles new topic", () => {});
-    it("throws error for un supported ops", () => {});
-    it("throws error when focusIndex does not map to focusDataItem", () => {});
-    it("throws error when when not able get to get topicGroup by objectPath", () => {});
-    it("throws error when when not able get to get topic by objectPath", () => {});
-  });
-
-  describe.skip("getSceneErrorsByTopic", () => {
-    it("groups SceneBuilder errors by topic name", () => {});
   });
 });

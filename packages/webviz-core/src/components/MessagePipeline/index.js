@@ -7,7 +7,7 @@
 //  You may not use this file except in compliance with the License.
 
 import { createMemoryHistory } from "history";
-import { flatten, groupBy } from "lodash";
+import { debounce, flatten, groupBy } from "lodash";
 import * as React from "react";
 import { Provider } from "react-redux";
 import { type Time, TimeUtil } from "rosbag";
@@ -37,7 +37,6 @@ import {
   type BailoutToken,
 } from "webviz-core/src/util/hooks";
 import naturalSort from "webviz-core/src/util/naturalSort";
-import reportError from "webviz-core/src/util/reportError";
 
 const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } = React;
 
@@ -58,6 +57,7 @@ export type MessagePipelineContext = {|
   seekPlayback(time: Time): void,
   // Don't render the next frame until the returned function has been called.
   pauseFrame(name: string): ResumeFrame,
+  requestBackfill(): void,
 |};
 
 const Context = createSelectableContext<MessagePipelineContext>();
@@ -85,9 +85,15 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
   const lastActiveData = useRef<?PlayerStateActiveData>(playerState.activeData);
   const [subscriptionsById, setAllSubscriptions] = useState<{ [string]: SubscribePayload[] }>({});
   const [publishersById: AdvertisePayload[], setAllPublishers: (AdvertisePayload[]) => void] = useState({});
-  const resolveTickFn = useRef<?() => void>();
-  const waitingForPromises = useRef<boolean>(false);
-  const promisesToWaitFor = useRef<FramePromise[]>([]);
+  // This is the state of the current tick of the player.
+  // This state is tied to the player, and should be replaced whenever the player changes.
+  const playerTickState = useRef<{|
+    // Call this to resolve the current tick. If this doesn't exist, there isn't a tick currently rendering.
+    resolveFn: ?() => void,
+    // Promises to halt the current tick for.
+    promisesToWaitFor: FramePromise[],
+    waitingForPromises: boolean,
+  |}>({ resolveFn: undefined, promisesToWaitFor: [], waitingForPromises: false });
 
   const subscriptions: SubscribePayload[] = useMemo(
     () => flatten(Object.keys(subscriptionsById).map((k) => subscriptionsById[k])),
@@ -103,37 +109,32 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
   // Delay the player listener promise until rendering has finished for the latest data.
   useLayoutEffect(
     () => {
-      if (resolveTickFn.current) {
+      if (playerTickState.current) {
+        // In certain cases like the player being replaced (reproduce by dragging a bag in while playing), we can
+        // replace the new playerTickState. We want to use one playerTickState throughout the entire tick, since it's
+        // implicitly tied to the player.
+        const currentPlayerTickState = playerTickState.current;
         // $FlowFixMe it doesn't matter if this function returns a promise.
         requestAnimationFrame(async () => {
-          if (waitingForPromises.current) {
-            reportError("MessagePipeline tried to resolve the frame twice, this should never happen", "", "app");
-            return;
-          }
-          if (resolveTickFn.current) {
-            if (promisesToWaitFor.current.length) {
+          if (currentPlayerTickState.resolveFn && !currentPlayerTickState.waitingForPromises) {
+            if (currentPlayerTickState.promisesToWaitFor.length) {
               // If we have finished rendering but we still have to wait for some promises wait for them here.
 
-              // Set a boolean that indicates we are waiting for promises to resolve. Don't re-enter the
-              // requestAnimationFrame if we are waiting for promises.
-              waitingForPromises.current = true;
-              const promises = promisesToWaitFor.current;
-              promisesToWaitFor.current = [];
+              const promises = currentPlayerTickState.promisesToWaitFor;
+              currentPlayerTickState.promisesToWaitFor = [];
+              currentPlayerTickState.waitingForPromises = true;
               // If `pauseFrame` is called while we are waiting for any other promises, they just wait for the frame
               // after the current one.
               await pauseFrameForPromises(promises);
 
-              if (resolveTickFn.current) {
-                const tickFn = resolveTickFn.current;
-                waitingForPromises.current = false;
-                tickFn();
-                resolveTickFn.current = undefined;
-              } else {
-                throw new Error("Finished waiting for promises but tick has already been resolved");
+              currentPlayerTickState.waitingForPromises = false;
+              if (currentPlayerTickState.resolveFn) {
+                currentPlayerTickState.resolveFn();
+                currentPlayerTickState.resolveFn = undefined;
               }
             } else {
-              resolveTickFn.current();
-              resolveTickFn.current = undefined;
+              currentPlayerTickState.resolveFn();
+              currentPlayerTickState.resolveFn = undefined;
             }
           }
         });
@@ -148,16 +149,19 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
       if (!player) {
         return;
       }
+      // Create a new PlayerTickState when the player is replaced.
+      playerTickState.current = { resolveFn: undefined, promisesToWaitFor: [], waitingForPromises: false };
+
       player.setListener((newPlayerState: PlayerState) => {
         warnOnOutOfSyncMessages(newPlayerState);
         if (currentPlayer.current !== player) {
           return Promise.resolve();
         }
-        if (resolveTickFn.current) {
+        if (playerTickState.current.resolveFn) {
           throw new Error("New playerState was emitted before last playerState was rendered.");
         }
         const promise = new Promise((resolve) => {
-          resolveTickFn.current = resolve;
+          playerTickState.current.resolveFn = resolve;
         });
 
         const { showInitializing, isPresent } = newPlayerState;
@@ -183,7 +187,7 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
         return promise;
       });
       return () => {
-        currentPlayer.current = resolveTickFn.current = undefined;
+        currentPlayer.current = playerTickState.current.resolveFn = undefined;
         player.close();
         setPlayerState({
           ...defaultPlayerState(),
@@ -225,11 +229,12 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
   const seekPlayback = useCallback((time: Time) => (player ? player.seekPlayback(time) : undefined), [player]);
   const pauseFrame = useCallback((name: string) => {
     const promise = signal();
-    promisesToWaitFor.current.push({ name, promise });
+    playerTickState.current.promisesToWaitFor.push({ name, promise });
     return () => {
       promise.resolve();
     };
   }, []);
+  const requestBackfill = useMemo(() => debounce(() => (player ? player.requestBackfill() : undefined)), [player]);
 
   return (
     <Context.Provider
@@ -248,6 +253,7 @@ export function MessagePipelineProvider({ children, player }: ProviderProps) {
         setPlaybackSpeed,
         seekPlayback,
         pauseFrame,
+        requestBackfill,
       })}>
       {children}
     </Context.Provider>
@@ -274,6 +280,8 @@ export function MockMessagePipelineProvider(props: {|
   seekPlayback?: (Time) => void,
   startTime?: Time,
   endTime?: Time,
+  pauseFrame?: (string) => ResumeFrame,
+  requestBackfill?: () => void,
 |}) {
   const storeRef = useRef(props.store || configureStore(createRootReducer(createMemoryHistory())));
   const startTime = useRef();
@@ -295,6 +303,8 @@ export function MockMessagePipelineProvider(props: {|
   const setSubscriptions = useCallback((id, subs) => setAllSubscriptions((s) => ({ ...s, [id]: subs })), [
     setAllSubscriptions,
   ]);
+
+  const requestBackfill = useMemo(() => props.requestBackfill || (() => {}), [props.requestBackfill]);
 
   const capabilities = useShallowMemo(props.capabilities || []);
 
@@ -351,7 +361,8 @@ export function MockMessagePipelineProvider(props: {|
           pausePlayback: () => {},
           setPlaybackSpeed: (_) => {},
           seekPlayback: props.seekPlayback || ((_) => {}),
-          pauseFrame: () => () => {},
+          pauseFrame: props.pauseFrame || (() => () => {}),
+          requestBackfill,
         }}>
         {props.children}
       </Context.Provider>

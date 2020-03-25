@@ -7,6 +7,7 @@
 //  You may not use this file except in compliance with the License.
 
 import CloseIcon from "@mdi/svg/svg/close.svg";
+import SearchIcon from "@mdi/svg/svg/magnify.svg";
 import { Icon } from "antd";
 import Downshift from "downshift";
 import fuzzySort from "fuzzysort";
@@ -28,13 +29,21 @@ import WebvizIcon from "webviz-core/src/components/Icon";
 import naturalSort from "webviz-core/src/util/naturalSort";
 import { colors } from "webviz-core/src/util/sharedStyleConstants";
 
+type StyleProps = {| showAddView: boolean, highlighted: boolean, filterText: string |};
 const SQuickAddTopic = styled.div`
   position: relative;
   display: flex;
   align-items: center;
-  padding: ${({ showAddView }) => `4px 4px 4px ${showAddView ? 4 : ITEM_MAIN_PADDING_LEFT - ICON_TOTAL_SIZE - 12}`}px;
-  background: ${({ showAddView, highlighted }: { showAddView: boolean, highlighted: boolean }) =>
-    highlighted ? colors.HOVER_BACKGROUND_COLOR : "unset"};
+  padding: ${({ showAddView, filterText }: StyleProps) => {
+    if (showAddView) {
+      return "4px";
+    }
+    const leftPadding = filterText
+      ? ITEM_MAIN_PADDING_LEFT - ICON_TOTAL_SIZE * 3
+      : ITEM_MAIN_PADDING_LEFT - ICON_TOTAL_SIZE * 2;
+    return `4px 4px 4px ${leftPadding}px`;
+  }};
+  background: ${({ showAddView, highlighted }: StyleProps) => (highlighted ? colors.HOVER_BACKGROUND_COLOR : "unset")};
 `;
 
 const SShowAddWrapper = styled.div`
@@ -242,7 +251,9 @@ function AddTopic({
         return (
           <SAddContainer>
             <SInputWrapper {...getRootProps({}, { suppressRefError: true })}>
-              <Icon type="search" />
+              <WebvizIcon small fade>
+                <SearchIcon />
+              </WebvizIcon>
               <SInput
                 ref={inputRef}
                 data-test="quick-add-topic-input"
@@ -329,7 +340,7 @@ export default function QuickAddTopic({
   onTopicGroupsChange,
   topicGroup,
   topicGroup: {
-    derivedFields: { addTopicKeyboardFocusIndex },
+    derivedFields: { addTopicKeyboardFocusIndex, filterText },
   },
   testShowAddView,
 }: Props) {
@@ -392,6 +403,7 @@ export default function QuickAddTopic({
       className={`focus-item-${addTopicKeyboardFocusIndex}`}
       role="option"
       highlighted={highlighted}
+      filterText={filterText}
       onMouseEnter={(e) => {
         if (!highlighted) {
           setFocusIndex(addTopicKeyboardFocusIndex);

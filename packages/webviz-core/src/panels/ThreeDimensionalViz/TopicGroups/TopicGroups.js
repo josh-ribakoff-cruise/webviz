@@ -6,8 +6,7 @@
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
 
-import LayersIcon from "@mdi/svg/svg/layers.svg";
-import { Icon as AntIcon } from "antd";
+import SearchIcon from "@mdi/svg/svg/magnify.svg";
 import fuzzySort from "fuzzysort";
 import { omit, set, cloneDeep, compact } from "lodash";
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
@@ -17,23 +16,25 @@ import styled from "styled-components";
 import { useDebounce, useDebouncedCallback } from "use-debounce";
 
 import { type Save3DConfig } from "../index";
-import { DEFAULT_DEBOUNCE_TIME, KEYBOARD_SHORTCUTS, FOCUS_ITEM_OPS } from "./constants";
+import { DEFAULT_DEBOUNCE_TIME, FOCUS_ITEM_OPS } from "./constants";
 import CreateGroupButton from "./CreateGroupButton";
 import { SInput } from "./QuickAddTopic";
 import TopicGroupList from "./TopicGroupList";
 import TopicGroupsMenu from "./TopicGroupsMenu";
+import { getOnTopicGroupsChangeDataByKeyboardOp } from "./topicGroupsOnChangeUtils";
 import {
   addIsKeyboardFocusedToTopicGroups,
   buildAvailableNamespacesByTopic,
   buildItemDisplayNameByTopicOrExtension,
-  getOnTopicGroupsChangeDataByKeyboardOp,
   getSceneErrorsByTopic,
   getTopicGroups,
   removeTopicPrefixes,
   updateFocusIndexesAndGetFocusData,
   FEATURE_DATA_SOURCE_PREFIXES,
   TOPIC_CONFIG,
+  ALL_DATA_SOURCE_PREFIXES,
 } from "./topicGroupsUtils";
+import TopIcons from "./TopIcons";
 import type { FocusItemOp, TopicGroupConfig, TopicGroupType } from "./types";
 import Confirm from "webviz-core/src/components/Confirm";
 import Icon from "webviz-core/src/components/Icon";
@@ -74,6 +75,12 @@ const STopicGroupsContainer = styled.div`
   z-index: 102;
 `;
 
+const SFocusContainer = styled.div`
+  &:focus {
+    outline: none;
+  }
+`;
+
 const STopicGroups = styled.div`
   position: relative;
   color: ${colors.TEXTL1};
@@ -81,14 +88,6 @@ const STopicGroups = styled.div`
   background-color: ${colors.TOOLBAR};
   max-width: 440px;
   padding-bottom: 6px;
-`;
-
-/* TODO(Audrey): stay consistent with other buttons in the 3D panel, will consolidate later. */
-const SIconWrapper = styled.div`
-  width: 28px;
-  border-radius: 4px;
-  padding: 0;
-  padding: 4px;
 `;
 
 const STopicGroupsHeader = styled.div`
@@ -117,6 +116,8 @@ type SharedProps = {|
   onMigrateToTopicGroupConfig: () => void,
   pinTopics: boolean,
   saveConfig: Save3DConfig,
+  setShowTopicGroups: (boolean) => void,
+  showTopicGroups: boolean,
   topicGroupsConfig: TopicGroupConfig[],
 |};
 type TopicGroupsBaseProps = {|
@@ -132,7 +133,8 @@ type TopicGroupsBaseProps = {|
 export function getFilteredKeys(
   topicGroupsConfig: TopicGroupConfig[],
   displayNameByTopic: { [topicName: string]: string },
-  filterText: string
+  filterText: string,
+  namespacesByTopic: { [topicName: string]: string[] }
 ): string[] {
   // Build a list of filtered keys for fuzzy filtering on group displayName, topic displayName and topicName.
   const allFilterKeysSet = new Set(); // no need to have duplicated filter keys
@@ -140,10 +142,21 @@ export function getFilteredKeys(
   topicGroupsConfig.forEach((groupConfig) => {
     allFilterKeysSet.add(groupConfig.displayName);
     groupConfig.items.forEach(({ topicName, displayName }) => {
+      // Search by topicName.
       allFilterKeysSet.add(topicName);
       if (onlySearchOnTopics) {
         return;
       }
+      // Search by namespace.
+      ALL_DATA_SOURCE_PREFIXES.forEach((prefix) => {
+        const prefixedTopicName = `${prefix}${topicName}`;
+        if (namespacesByTopic[prefixedTopicName]) {
+          namespacesByTopic[prefixedTopicName].forEach((ns) => {
+            allFilterKeysSet.add(ns);
+          });
+        }
+      });
+      // Search by displayName.
       if (displayName) {
         allFilterKeysSet.add(displayName);
       } else if (displayNameByTopic[topicName]) {
@@ -158,6 +171,7 @@ export function getFilteredKeys(
 export function TopicGroupsBase({
   availableTopics = [],
   containerHeight,
+  dataTestShowErrors,
   displayNameByTopic = {},
   errorsByTopic,
   namespacesByTopic = {},
@@ -167,9 +181,12 @@ export function TopicGroupsBase({
   saveConfig,
   sceneCollectorMsgForTopicSetting,
   setSettingsTopicName,
+  setShowTopicGroups,
+  showTopicGroups,
   topicGroupsConfig,
-  dataTestShowErrors,
 }: TopicGroupsBaseProps) {
+  const renderTopicGroups = pinTopics || showTopicGroups;
+
   const inputRef = useRef<?HTMLInputElement>();
   const containerRef = useRef<?HTMLDivElement>();
   // Use focusIndex to control which group/topic/action row to focus on during keyboard nav.
@@ -178,10 +195,28 @@ export function TopicGroupsBase({
   // the specific component to perform the UI changes, and the component will clear focusItemOp upon completing the UI changes.
   const [focusItemOp, setFocusItemOp] = useState<?FocusItemOp>();
 
+  // Reset the focusIndex when close TopicGroups.
+  useEffect(
+    () => {
+      if (!showTopicGroups) {
+        setFocusIndex(-1);
+      }
+    },
+    [showTopicGroups]
+  );
+
+  // use callbackRefs to prevent unnecessary callback changes.
+  const callbackRefs = useRef({ focusIndex });
+  callbackRefs.current = { focusIndex };
+
   const onFocusOnContainer = useCallback(() => {
     // Focus on the container if it's not already focused.
     if (containerRef.current && document.activeElement !== containerRef.current) {
       containerRef.current.focus();
+    }
+    // Always focus on the first item when bringing the focus to the container.
+    if (callbackRefs.current.focusIndex === -1) {
+      setFocusIndex(0);
     }
   }, []);
 
@@ -191,14 +226,14 @@ export function TopicGroupsBase({
     [focusIndex, focusItemOp, onFocusOnContainer]
   );
 
-  // Focus on the container immediately when the pinTopics becomes true
+  // Focus on the container immediately when the opening TopicGroups.
   useEffect(
     () => {
-      if (pinTopics) {
+      if (renderTopicGroups) {
         onFocusOnContainer();
       }
     },
-    [onFocusOnContainer, pinTopics]
+    [onFocusOnContainer, renderTopicGroups]
   );
 
   const [filterText, setFilterText] = useState<string>("");
@@ -210,12 +245,14 @@ export function TopicGroupsBase({
     () => {
       // Update the filteredKeys based on filterText. Debounce it since the user might type very fast.
       if (debouncedFilterText) {
-        setFilteredKeysSet(new Set(getFilteredKeys(topicGroupsConfig, displayNameByTopic, filterText)));
+        setFilteredKeysSet(
+          new Set(getFilteredKeys(topicGroupsConfig, displayNameByTopic, filterText, namespacesByTopic))
+        );
       } else {
         setFilteredKeysSet(undefined);
       }
     },
-    [debouncedFilterText, displayNameByTopic, filterText, topicGroupsConfig]
+    [debouncedFilterText, displayNameByTopic, filterText, namespacesByTopic, topicGroupsConfig]
   );
 
   const nonPrefixedAvailableTopicNames = useMemo(
@@ -241,7 +278,7 @@ export function TopicGroupsBase({
   // Update the topicGroups and assign focusIndexes according to the final visibility/expanded states, and collect `focusData`
   // which is an array that can map indexes (focusIndex) to
   //  - objectPath: for getting the group/topic data once the user triggered a keyboard op
-  //  - focusType: including GROUP, NEW_GROUP, TOPIC, NEW_TOPIC, which tells what kind of data and field we need to get to perform the op
+  //  - focusType: including GROUP, NEW_GROUP, TOPIC, NEW_TOPIC, NAMESPACE, which tells what kind of data and field we need to get to perform the op
   const { topicGroups: topicGroupsWithUpdatedFocusIndex, focusData } = useMemo(
     () => updateFocusIndexesAndGetFocusData(topicGroupsWithoutFocusInfo),
     [topicGroupsWithoutFocusInfo]
@@ -267,8 +304,8 @@ export function TopicGroupsBase({
       if (focusElems.length > 0) {
         scrollIntoView(focusElems[0], {
           behavior: "smooth",
+          block: "center",
           boundary: scrollContainerElem,
-          block: "nearest",
           scrollMode: "if-needed",
         });
       }
@@ -309,6 +346,13 @@ export function TopicGroupsBase({
 
   const [debouncedSharedOnKeyHandler] = useDebouncedCallback(
     (focusItemOpAlt: FocusItemOp, isShiftKeyPressed?: boolean) => {
+      // Don't support item expand/collapse when filtering since we auto expand all.
+      if (
+        debouncedFilterText &&
+        (focusItemOpAlt === FOCUS_ITEM_OPS.ArrowLeft || focusItemOpAlt === FOCUS_ITEM_OPS.ArrowRight)
+      ) {
+        return;
+      }
       const onTopicGroupsChangeData = getOnTopicGroupsChangeDataByKeyboardOp({
         focusItemOp: focusItemOpAlt,
         focusData,
@@ -392,9 +436,12 @@ export function TopicGroupsBase({
       let handlers = {
         t: (e) => {
           e.preventDefault();
-          // Toggle pinTopic when the user interacted with topic group UI. Note this is different from toggling
-          // when clicked 3D panel which is handled in Layout.js.
-          saveConfig({ pinTopics: !pinTopics });
+          // Unpin before enabling keyboard toggle open/close.
+          if (pinTopics) {
+            saveConfig({ pinTopics: false });
+            return;
+          }
+          setShowTopicGroups(!showTopicGroups);
         },
         Backspace: (e) => {
           e.preventDefault();
@@ -408,21 +455,21 @@ export function TopicGroupsBase({
           }
           if (activeEl === containerEl) {
             e.preventDefault();
-            // Toggle pinTopic off if the topic group is already open.
-            if (pinTopics) {
-              saveConfig({ pinTopics: false });
+            // Hide TopicGroups if the already open.
+            if (showTopicGroups) {
+              setShowTopicGroups(false);
             } else {
-              // Exit topic group focus if the topic group is closed.
+              // Exit TopicGroups focus if it's closed.
               onExitTopicGroupFocus();
             }
           } else if (containerEl.contains(activeEl)) {
-            // Otherwise, get out of any other topic group focus elements, and simply focus on the topic group container.
+            // Otherwise, get out of any other TopicGroups focus elements, and simply focus on the TopicGroups container.
             e.preventDefault();
             onFocusOnContainer();
           }
         },
       };
-      if (pinTopics) {
+      if (renderTopicGroups) {
         handlers = {
           ...handlers,
           ...sharedHandlers,
@@ -437,13 +484,31 @@ export function TopicGroupsBase({
       }
       return handlers;
     },
-    [debouncedSharedOnKeyHandler, onExitTopicGroupFocus, onFocusOnContainer, pinTopics, saveConfig, sharedHandlers]
+    [
+      debouncedSharedOnKeyHandler,
+      onExitTopicGroupFocus,
+      onFocusOnContainer,
+      pinTopics,
+      renderTopicGroups,
+      saveConfig,
+      setShowTopicGroups,
+      sharedHandlers,
+      showTopicGroups,
+    ]
   );
 
   return (
     <STopicGroupsContainer style={{ maxHeight: containerHeight - 30 }}>
-      <div
+      <SFocusContainer
         style={{ maxHeight: containerHeight - 30 }}
+        onMouseEnter={() => {
+          // Focus on the container in order to enable keyboard navigation.
+          onFocusOnContainer();
+        }}
+        onMouseLeave={() => {
+          setFocusIndex(-1);
+        }}
+        onClick={(e) => e.stopPropagation()}
         data-test={"topic-groups-focus-container"}
         aria-activedescendant={focusIndex === -1 ? "" : `focus-item-${focusIndex}`}
         aria-expanded={topicGroups.length > 0}
@@ -454,27 +519,20 @@ export function TopicGroupsBase({
         tabIndex={0}>
         <KeyListener keyDownHandlers={keyDownHandlers} />
         <KeyboardContext.Provider value={keyboardContextValue}>
-          <SIconWrapper style={{ backgroundColor: pinTopics ? "transparent" : "#2d2c33" }}>
-            <Icon
-              tooltipProps={{
-                contents: KEYBOARD_SHORTCUTS.map(({ description, keys }, idx) => (
-                  <KeyboardShortcut key={idx} description={description} keys={keys} />
-                )),
-              }}
-              dataTest="open-topic-picker"
-              active={pinTopics}
-              fade
-              medium
-              onClick={() => saveConfig({ pinTopics: !pinTopics })}
-              style={{ color: "white" }}>
-              <LayersIcon />
-            </Icon>
-          </SIconWrapper>
-          {pinTopics && (
+          <TopIcons
+            pinTopics={pinTopics}
+            renderTopicGroups={renderTopicGroups}
+            saveConfig={saveConfig}
+            setShowTopicGroups={setShowTopicGroups}
+            showTopicGroups={showTopicGroups}
+          />
+          {renderTopicGroups && (
             <STopicGroups>
               <STopicGroupsHeader>
                 <SFilter>
-                  <AntIcon type="search" style={{ fontSize: 13 }} />
+                  <Icon small fade tooltipProps={{ placement: "bottom", contents: <KeyboardShortcut keys={["/"]} /> }}>
+                    <SearchIcon />
+                  </Icon>
                   <SInput
                     aria-autocomplete="list"
                     aria-controls="topic-group-listbox"
@@ -541,7 +599,7 @@ export function TopicGroupsBase({
             </STopicGroups>
           )}
         </KeyboardContext.Provider>
-      </div>
+      </SFocusContainer>
     </STopicGroupsContainer>
   );
 }
@@ -555,31 +613,39 @@ type SceneData = {|
 type TopicGroupsProps = {|
   ...SharedProps,
   availableTfs: string[],
+  enableShortDisplayNames: boolean,
   sceneBuilder: SceneBuilder,
 |};
 
 type UnMemoizedTopicGroupsProps = {|
   ...SharedProps,
   ...SceneData,
+  enableShortDisplayNames: boolean,
+  availableTfs: string[],
   sceneCollectorMsgForTopicSetting: any,
   setSettingsTopicName: (topicName: ?string) => void,
-  availableTfs: string[],
+  setShowTopicGroups: (boolean) => void,
+  showTopicGroups: boolean,
 |};
-// Use the wrapper component to handle top level data processing.
+// Use the wrapper component to handle displayName, namespace and topic processing.
 function UnMemoizedTopicGroups({
   availableTfs,
   availableTopics,
+  enableShortDisplayNames,
   sceneCollectorMsgForTopicSetting,
   sceneErrorsByTopic,
   sceneNamespacesByTopic,
   ...rest
 }: UnMemoizedTopicGroupsProps) {
-  const { configDisplayNameByTopic, configNamespacesByTopic } = useMemo(() => {
-    return {
-      configDisplayNameByTopic: buildItemDisplayNameByTopicOrExtension(TOPIC_CONFIG),
-      configNamespacesByTopic: buildAvailableNamespacesByTopic(TOPIC_CONFIG),
-    };
-  }, []);
+  const { configDisplayNameByTopic, configNamespacesByTopic } = useMemo(
+    () => {
+      return {
+        configDisplayNameByTopic: buildItemDisplayNameByTopicOrExtension(TOPIC_CONFIG, enableShortDisplayNames),
+        configNamespacesByTopic: buildAvailableNamespacesByTopic(TOPIC_CONFIG),
+      };
+    },
+    [enableShortDisplayNames]
+  );
 
   const namespacesByTopic = useMemo(
     () => {
@@ -623,7 +689,16 @@ const DEFAULT_SCENE_BUILDER_DATA = {
   sceneNamespacesByTopic: {},
 };
 
-export default function TopicGroupsWrapper({ pinTopics, sceneBuilder, ...rest }: TopicGroupsProps) {
+// Use the Wrapper to extract SceneBuilder related data.
+export default function TopicGroupsWrapper({
+  pinTopics,
+  sceneBuilder,
+  setShowTopicGroups,
+  showTopicGroups,
+  ...rest
+}: TopicGroupsProps) {
+  const renderTopicGroups = pinTopics || showTopicGroups;
+
   // Set the settingsTopic at top level so that we can collect the msg needed for topic settings from SceneBuilder and pass it down.
   const [settingsTopicName, setSettingsTopicName] = useState<?string>(undefined);
 
@@ -633,7 +708,7 @@ export default function TopicGroupsWrapper({ pinTopics, sceneBuilder, ...rest }:
   let sceneCollectorMsgForTopicSetting;
 
   // Recompute the scene data on each render.
-  if (pinTopics) {
+  if (renderTopicGroups) {
     sceneErrorsByTopic = getSceneErrorsByTopic(sceneBuilder.errors);
     sceneCollectorMsgForTopicSetting =
       (settingsTopicName &&
@@ -660,9 +735,11 @@ export default function TopicGroupsWrapper({ pinTopics, sceneBuilder, ...rest }:
     <MemoizedTopicGroups
       {...sceneDataRef.current}
       {...rest}
-      setSettingsTopicName={setSettingsTopicName}
       pinTopics={pinTopics}
       sceneCollectorMsgForTopicSetting={sceneCollectorMsgForTopicSetting}
+      setSettingsTopicName={setSettingsTopicName}
+      setShowTopicGroups={setShowTopicGroups}
+      showTopicGroups={showTopicGroups}
     />
   );
 }

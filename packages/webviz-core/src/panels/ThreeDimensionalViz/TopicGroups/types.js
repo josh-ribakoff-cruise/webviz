@@ -8,7 +8,7 @@
 
 import MessageCollector from "webviz-core/src/panels/ThreeDimensionalViz/SceneBuilder/MessageCollector";
 
-export type KeyboardFocusType = "GROUP" | "NEW_GROUP" | "TOPIC" | "NEW_TOPIC";
+export type KeyboardFocusType = "GROUP" | "NEW_GROUP" | "TOPIC" | "NEW_TOPIC" | "NAMESPACE";
 export type KeyboardFocusData = {| objectPath: string, focusType: KeyboardFocusType |};
 export type FocusItemOp = "Enter" | "ArrowLeft" | "ArrowRight" | "Backspace" | "ArrowUp" | "ArrowDown";
 
@@ -17,7 +17,7 @@ export type OnTopicGroupsChange = (objectPath: string, newValue: any) => void;
 
 export type VisibilityByColumn = boolean[];
 // Select all namespaces if the item is undefined, and select none if it's `[]`
-export type SelectedNamespacesByColumn = (?(string[]))[];
+export type NamespacesByColumn = (?(string[]))[];
 export type SettingsByColumn = any[];
 
 type DisplayVisibility = {|
@@ -27,23 +27,21 @@ type DisplayVisibility = {|
   available: boolean,
 |};
 
-export type NamespaceItem = {|
-  name: string,
-  displayVisibilityByColumn: (?DisplayVisibility)[],
-|};
-
 export type TopicItemConfig = {|
   displayName?: string,
   topicName: string,
   expanded?: boolean, // if true, namespaces will be expanded
-  selectedNamespacesByColumn?: SelectedNamespacesByColumn,
+  selectedNamespacesByColumn?: NamespacesByColumn,
   settingsByColumn?: any[],
   visibilityByColumn?: boolean[],
 |};
 
-type NamespaceDisplayVisibilityByNamespace = {
-  [name: string]: (?DisplayVisibility)[],
-};
+export type NamespaceItem = {|
+  namespace: string,
+  isKeyboardFocused?: boolean,
+  keyboardFocusIndex: number,
+  displayVisibilityByColumn: (?DisplayVisibility)[],
+|};
 
 type DerivedTopicItemFields = {|
   id: string,
@@ -68,8 +66,10 @@ type DerivedTopicItemFields = {|
   prefixByColumn: string[],
   // Data for data source badge UI.
   displayVisibilityByColumn?: (?DisplayVisibility)[],
-  // Object keyed by namespaces and the value contains data for data source badge UI.
-  namespaceDisplayVisibilityByNamespace?: NamespaceDisplayVisibilityByNamespace,
+  // Store the sorted namespaces and add related display data for UI render.
+  sortedNamespaceDisplayVisibilityByColumn?: NamespaceItem[],
+  // Store the availableNamespacesByColumn so we can use to compute when toggling single and all namespaces.
+  availableNamespacesByColumn?: NamespacesByColumn,
 |};
 
 export type TopicItem = {|

@@ -41,9 +41,18 @@ export interface Player {
   startPlayback(): void;
   pausePlayback(): void;
   seekPlayback(time: Time): void; // Seek to a particular time. Might trigger backfilling.
+
   // If the Player supports non-real-time speeds (i.e. PlayerState#capabilities contains
   // PlayerCapabilities.setSpeed), set that speed. E.g. 1.0 is real time, 0.2 is 20% of real time.
   setPlaybackSpeed(speedFraction: number): void;
+
+  // Request a backfill for Players that support it. Allowed to be a no-op if the player does not
+  // support backfilling, or if it's already playing (in which case we'd get new messages soon anyway).
+  // This is called after subscriptions changed, when a new PanelAPI reducer is used, and so on.
+  // Basically whenever something changed in the layout that causes a panel to not have recent data
+  // to display. We do our best in the MessagePipeline to not call this method too often (e.g. it's
+  // debounced).
+  requestBackfill(): void;
 }
 
 export type PlayerState = {|

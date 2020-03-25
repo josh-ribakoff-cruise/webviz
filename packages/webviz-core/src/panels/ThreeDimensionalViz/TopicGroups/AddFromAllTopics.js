@@ -5,7 +5,8 @@
 //  This source code is licensed under the Apache License, Version 2.0,
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
-import { Icon, Checkbox } from "antd";
+import SearchIcon from "@mdi/svg/svg/magnify.svg";
+import { Checkbox } from "antd";
 import Downshift from "downshift";
 import fuzzySort from "fuzzysort";
 import { uniq, partition } from "lodash";
@@ -20,6 +21,7 @@ import { getIsTopicName, SOption, SInput, SInputWrapper } from "./QuickAddTopic"
 import { removeBlankSpaces } from "./topicGroupsUtils";
 import TopicNameDisplay from "./TopicNameDisplay";
 import Button from "webviz-core/src/components/Button";
+import Icon from "webviz-core/src/components/Icon";
 import { useChangeDetector } from "webviz-core/src/util/hooks";
 import naturalSort from "webviz-core/src/util/naturalSort";
 import { colors } from "webviz-core/src/util/sharedStyleConstants";
@@ -249,7 +251,9 @@ export default function AddFromAllTopics({
         return (
           <SAddContainer>
             <SInputWrapper style={{ paddingLeft: 16 }} {...getRootProps({}, { suppressRefError: true })}>
-              <Icon type="search" style={{ paddingRight: 2 }} />
+              <Icon small fade>
+                <SearchIcon />
+              </Icon>
               <SInput
                 ref={inputRef}
                 data-test="all-topics-input"

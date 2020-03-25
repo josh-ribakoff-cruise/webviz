@@ -6,26 +6,12 @@
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
 
-import { omit, flatten, uniq, keyBy, mapValues, get, isEqual } from "lodash";
+import { omit, flatten, uniq, keyBy, mapValues, isEqual } from "lodash";
 import microMemoize from "micro-memoize";
 
-import { FOCUS_ITEM_OPS, KEYBOARD_FOCUS_TYPES } from "./constants";
+import { KEYBOARD_FOCUS_TYPES } from "./constants";
 import { getSettingsByColumnWithDefaults } from "./topicGroupsMigrations";
-import {
-  toggleVisibility,
-  keyboardToggleAllForGroupVisibility,
-  keyboardToggleAllForTopicVisibility,
-} from "./topicGroupsVisibilityUtils";
-import type {
-  FocusItemOp,
-  KeyboardFocusData,
-  KeyboardFocusType,
-  TopicGroupConfig,
-  TopicGroupType,
-  TopicItemConfig,
-  TopicItem,
-  VisibilityByColumn,
-} from "./types";
+import type { KeyboardFocusData, TopicGroupConfig, TopicGroupType, TopicItemConfig } from "./types";
 import { getGlobalHooks } from "webviz-core/src/loadWebviz";
 import type { SceneErrors } from "webviz-core/src/panels/ThreeDimensionalViz/SceneBuilder/index";
 import { type TopicConfig } from "webviz-core/src/panels/ThreeDimensionalViz/TopicSelector/topicTree";
@@ -130,6 +116,7 @@ export function getTopicGroups(
         const prefixByColumn = getPrefixByColumn(topicName);
         const topicHasFeatureColumn = hasFeatureColumn && !BASE_COLUMN_ONLY_TOPICS.has(topicName);
         const topicDisplayVisibilityByColumn = topicHasFeatureColumn ? [undefined, undefined] : [undefined];
+        const availableNamespacesByColumn = topicHasFeatureColumn ? [[], []] : [[]];
         const namespaceDisplayVisibilityByNamespace = {};
         visibilityByColumn.forEach((columnVisible, columnIdx) => {
           // Don't need to process feature column if no feature topics are available.
@@ -155,8 +142,10 @@ export function getTopicGroups(
             };
             const isNamespaceParentVisible = groupVisibilityByColumn[columnIdx] && columnVisible;
 
+            // Store the available namespaces so we can control what namespaces to toggle on/off later.
+            availableNamespacesByColumn[columnIdx] = namespacesByTopic[prefixedTopicName] || [];
             // Only show namespaces when the topic is available.
-            (namespacesByTopic[prefixedTopicName] || []).forEach((ns) => {
+            availableNamespacesByColumn[columnIdx].forEach((ns) => {
               if (!namespaceDisplayVisibilityByNamespace[ns]) {
                 namespaceDisplayVisibilityByNamespace[ns] = topicHasFeatureColumn
                   ? [undefined, undefined]
@@ -175,14 +164,27 @@ export function getTopicGroups(
         });
 
         const displayNameWithFallback = displayName || displayNameByTopic[topicName];
+
+        const sortedNamespaceDisplayVisibilityByColumn = Object.keys(namespaceDisplayVisibilityByNamespace)
+          .sort()
+          .filter((nsName) => (filteredKeysSet ? filteredKeysSet.has(nsName) : true))
+          .map((namespace) => ({
+            namespace,
+            keyboardFocusIndex: -1,
+            displayVisibilityByColumn: namespaceDisplayVisibilityByNamespace[namespace],
+          }));
+
         const isTopicShownInList =
           !filteredKeysSet ||
-          (filteredKeysSet && (filteredKeysSet.has(topicName) || filteredKeysSet.has(displayNameWithFallback)));
+          ((filteredKeysSet && (filteredKeysSet.has(topicName) || filteredKeysSet.has(displayNameWithFallback))) ||
+            // Show topic if any namespace matches.
+            sortedNamespaceDisplayVisibilityByColumn.length > 0);
 
         // Auto select group if any topic in this group is selected.
         if (isTopicShownInList) {
           isAnyTopicFiltered = true;
         }
+
         return {
           // Save the original config in order to save back to panelConfig.
           ...topicItemConfig,
@@ -192,9 +194,9 @@ export function getTopicGroups(
             isShownInList: isTopicShownInList,
             keyboardFocusIndex: -1,
             prefixByColumn,
-            ...(isEqual(namespaceDisplayVisibilityByNamespace, {})
-              ? undefined
-              : { namespaceDisplayVisibilityByNamespace }),
+            ...(sortedNamespaceDisplayVisibilityByColumn.length
+              ? { sortedNamespaceDisplayVisibilityByColumn, availableNamespacesByColumn }
+              : undefined),
             ...(isEqual(topicDisplayVisibilityByColumn, [undefined, undefined]) ||
             isEqual(topicDisplayVisibilityByColumn, [undefined])
               ? undefined
@@ -246,14 +248,28 @@ export function updateFocusIndexesAndGetFocusData(
     if (isShownInList) {
       focusData.push({ objectPath: `[${idx}]`, focusType: KEYBOARD_FOCUS_TYPES.GROUP });
     }
-    // Only assign updated focusIndexes to visible topics
+    // Only assign updated focusIndexes to visible topics.
     const shouldAssignFocusIndexesToTopics = isShownInList && expanded;
     if (shouldAssignFocusIndexesToTopics) {
       newGroup.items = items.map((item, idx1) => {
         const newItem = { ...item };
-        if (item.derivedFields.isShownInList) {
+        const {
+          expanded: topicExpanded,
+          derivedFields: { isShownInList: topicIsShownInList, sortedNamespaceDisplayVisibilityByColumn },
+        } = item;
+        if (topicIsShownInList) {
           newItem.derivedFields.keyboardFocusIndex = focusData.length;
           focusData.push({ objectPath: `[${idx}].items.[${idx1}]`, focusType: KEYBOARD_FOCUS_TYPES.TOPIC });
+          // Assign focusIndexes to namespaces.
+          if (topicExpanded && sortedNamespaceDisplayVisibilityByColumn) {
+            sortedNamespaceDisplayVisibilityByColumn.forEach((nsItem, nsItemIdx) => {
+              nsItem.keyboardFocusIndex = focusData.length;
+              focusData.push({
+                objectPath: `[${idx}].items.[${idx1}].derivedFields.sortedNamespaceDisplayVisibilityByColumn.[${nsItemIdx}]`,
+                focusType: KEYBOARD_FOCUS_TYPES.NAMESPACE,
+              });
+            });
+          }
         }
         return newItem;
       });
@@ -289,124 +305,31 @@ export function addIsKeyboardFocusedToTopicGroups(topicGroups: TopicGroupType[],
       derivedFields:
         item.derivedFields.keyboardFocusIndex === focusIndex
           ? { ...item.derivedFields, isKeyboardFocused: true }
+          : item.derivedFields.sortedNamespaceDisplayVisibilityByColumn
+          ? {
+              ...item.derivedFields,
+              sortedNamespaceDisplayVisibilityByColumn: item.derivedFields.sortedNamespaceDisplayVisibilityByColumn.map(
+                (nsItem) =>
+                  nsItem.keyboardFocusIndex === focusIndex
+                    ? {
+                        ...nsItem,
+                        isKeyboardFocused: true,
+                      }
+                    : nsItem
+              ),
+            }
           : item.derivedFields,
     })),
   }));
 }
 
-export function getOnTopicGroupsChangeDataByKeyboardOp({
-  focusItemOp,
-  topicGroups,
-  focusData,
-  focusIndex,
-  isShiftKeyPressed,
-}: {
-  focusItemOp: FocusItemOp,
-  topicGroups: TopicGroupType[],
-  focusData: KeyboardFocusData[],
-  focusIndex: number,
-  isShiftKeyPressed: ?boolean,
-}): ?{|
-  focusType: KeyboardFocusType,
-  objectPath: string,
-  newValue?: boolean | ?VisibilityByColumn | TopicGroupType | TopicItem,
-  unhandledFocusItemOp?: FocusItemOp,
-|} {
-  // Current no op is supported when focusIndex is -1, add more if needed
-  if (focusIndex === -1) {
-    return;
-  }
-  const focusDataItem = focusData[focusIndex];
-  if (!focusDataItem) {
-    throw new Error(`focusIndex ${focusIndex} should map to objectPath and focusType.`);
-  }
-  const { objectPath, focusType } = focusDataItem;
-  switch (focusType) {
-    case "GROUP":
-      {
-        const maybeGroup: ?TopicGroupType = get(topicGroups, objectPath);
-        if (!maybeGroup) {
-          throw new Error(`Not able to get topic group by ${objectPath}`);
-        }
-        if (focusItemOp === FOCUS_ITEM_OPS.Enter) {
-          // toggle group visibility
-          return isShiftKeyPressed
-            ? {
-                focusType,
-                objectPath,
-                newValue: keyboardToggleAllForGroupVisibility(maybeGroup),
-              }
-            : {
-                focusType,
-                objectPath: `${objectPath}.visibilityByColumn`,
-                newValue: toggleVisibility(maybeGroup.visibilityByColumn || [false, false]),
-              };
-        } else if (focusItemOp === FOCUS_ITEM_OPS.ArrowRight && !maybeGroup.expanded) {
-          // expand the group
-          return { focusType, objectPath: `${objectPath}.expanded`, newValue: true };
-        } else if (focusItemOp === FOCUS_ITEM_OPS.ArrowLeft && maybeGroup.expanded) {
-          // collapse the group only if the filterText is valid since we auto expand the group when filtering
-          if (!maybeGroup.derivedFields.filterText) {
-            return { focusType, objectPath: `${objectPath}.expanded`, newValue: false };
-          }
-        } else if (focusItemOp === FOCUS_ITEM_OPS.Backspace) {
-          // delete the group
-          return { focusType, objectPath, newValue: undefined, unhandledFocusItemOp: focusItemOp };
-        }
-      }
-      break;
-    case "NEW_GROUP":
-      if (focusItemOp === FOCUS_ITEM_OPS.Enter) {
-        // Return the op directly to be handled in the UI
-        return { focusType, objectPath, unhandledFocusItemOp: focusItemOp };
-      }
-      break;
-    case "TOPIC":
-      {
-        const maybeTopic: ?TopicItem = get(topicGroups, objectPath);
-        if (!maybeTopic) {
-          throw new Error(`Not able to get topic by ${objectPath}`);
-        }
-        if (focusItemOp === FOCUS_ITEM_OPS.Enter) {
-          // toggle topic visibility
-          return isShiftKeyPressed
-            ? {
-                focusType,
-                objectPath,
-                newValue: keyboardToggleAllForTopicVisibility(maybeTopic),
-              }
-            : {
-                focusType,
-                objectPath: `${objectPath}.visibilityByColumn`,
-                newValue: toggleVisibility(maybeTopic.visibilityByColumn || [false, false]),
-              };
-        } else if (focusItemOp === FOCUS_ITEM_OPS.ArrowRight && !maybeTopic.expanded) {
-          // expand the topic
-          return { focusType, objectPath: `${objectPath}.expanded`, newValue: true };
-        } else if (focusItemOp === FOCUS_ITEM_OPS.ArrowLeft && maybeTopic.expanded) {
-          // collapse the topic
-          return { focusType, objectPath: `${objectPath}.expanded`, newValue: false };
-        } else if (focusItemOp === FOCUS_ITEM_OPS.Backspace) {
-          // delete the topic
-          return { focusType, objectPath, newValue: undefined, unhandledFocusItemOp: focusItemOp };
-        }
-      }
-      break;
-    case "NEW_TOPIC":
-      if (focusItemOp === FOCUS_ITEM_OPS.Enter) {
-        // Return the op directly to be handled in the UI
-        return { focusType, objectPath, unhandledFocusItemOp: focusItemOp };
-      }
-      break;
-    default:
-      (focusType: empty);
-      throw new Error(`${focusType} is not supported.`);
-  }
-}
-
 type TopicTreeItem = {| topic: string, name: string |};
 // Traverse the tree and flatten the children items in the topicConfig.
-function* flattenItem(item: TopicConfig, name: string): Generator<TopicTreeItem, void, void> {
+function* flattenItem(
+  item: TopicConfig,
+  name: string,
+  enableShortDisplayNames: boolean
+): Generator<TopicTreeItem, void, void> {
   const childrenItems = item.children;
   // extensions or leaf nodes
   if (!childrenItems || item.extension) {
@@ -415,26 +338,37 @@ function* flattenItem(item: TopicConfig, name: string): Generator<TopicTreeItem,
   }
   if (childrenItems) {
     for (const subItem of childrenItems) {
-      let subItemName = `${name} / ${subItem.name || ""}`;
-      if (!subItem.name && subItem.topic) {
+      let subItemName = subItem.displayName || `${name} / ${subItem.name || ""}`;
+      if (!subItem.displayName && !subItem.name && subItem.topic) {
         subItemName = name;
       }
-      yield* flattenItem(subItem, subItemName);
+      if (!enableShortDisplayNames) {
+        subItemName = `${name} / ${subItem.name || ""}`;
+        if (!subItem.name && subItem.topic) {
+          subItemName = name;
+        }
+      }
+      yield* flattenItem(subItem, subItemName, enableShortDisplayNames);
     }
   }
 }
 
 // Memoize the flattened nodes since it only needs to be computed once.
 export const getFlattenedTreeNodes = microMemoize(
-  (topicConfig): TopicTreeItem[] => {
-    return flatten(topicConfig.children.map((item) => Array.from(flattenItem(item, item.name || ""))));
+  (topicConfig: TopicConfig, enableShortDisplayNames: boolean): TopicTreeItem[] => {
+    if (!topicConfig.children) {
+      return [];
+    }
+    return flatten(
+      topicConfig.children.map((item) => Array.from(flattenItem(item, item.name || "", enableShortDisplayNames)))
+    );
   }
 );
 
 // Generate a map based on topicTree config, so we can map a topicName or extension to a preconfigured name.
 export const buildItemDisplayNameByTopicOrExtension = microMemoize(
-  (topicConfig: TopicConfig): DisplayNameByTopic => {
-    const flattenedTopicNodes = getFlattenedTreeNodes(topicConfig);
+  (topicConfig: TopicConfig, enableShortDisplayNames?: boolean): DisplayNameByTopic => {
+    const flattenedTopicNodes = getFlattenedTreeNodes(topicConfig, !!enableShortDisplayNames);
     const result = { "/metadata": "Map", "/tf": "TF" };
     for (const node of flattenedTopicNodes) {
       const key = node.topic || node.extension;
